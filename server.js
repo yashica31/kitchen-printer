@@ -229,7 +229,7 @@ app.post('/print', (req, res) => {
 
   if (priority === 'urgent') { text('*** URGENT ***'); newline(); }
 
-  text('KITCHEN MESSAGE');
+  text('MESSAGE FROM STAFF');
   newline();
   add(GS, 0x21, 0x00);
   add(ESC, 0x45, 0x00);
@@ -273,7 +273,7 @@ app.post('/print', (req, res) => {
   });
 });
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('  ✅ Kitchen Messenger is running!');
