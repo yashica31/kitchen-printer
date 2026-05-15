@@ -1,14 +1,10 @@
 const express = require('express');
-const net = require('net');
-const fs = require('fs');
 const app = express();
 
-// CHANGE THESE TWO LINES ─────────
-const PRINTER_IP = '192.168.100.142';
-const PRINTER_PORT = 9100;
-// ────────────────────────────────
-
 app.use(express.json());
+
+// In-memory print queue
+let printQueue = [];
 
 // Serve the front-end page
 app.get('/', (req, res) => {
@@ -139,7 +135,7 @@ app.get('/', (req, res) => {
         <p class="subtitle">Send a message directly to the kitchen printer</p>
       </div>
     </div>
- 
+
     <label>Your name</label>
     <input type="text" id="sender" placeholder="e.g. Front Cashier" />
 
@@ -184,7 +180,7 @@ app.get('/', (req, res) => {
     status.textContent = '📡 Sending to printer...';
 
     try {
-      const res = await fetch('/print', {
+      const res = await fetch('/add-job', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sender, message, priority })
@@ -192,14 +188,14 @@ app.get('/', (req, res) => {
       const data = await res.json();
       if (data.success) {
         status.className = 'status success';
-        status.textContent = '✅ Printed successfully!';
+        status.textContent = '✅ Sent! Printer will print shortly.';
         document.getElementById('message').value = '';
       } else {
         throw new Error(data.error);
       }
     } catch (err) {
       status.className = 'status error';
-      status.textContent = '❌ Could not reach printer. Check network connection.';
+      status.textContent = '❌ Could not send. Check connection.';
     } finally {
       btn.disabled = false;
     }
@@ -209,78 +205,67 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// Handle print requests
-app.post('/print', (req, res) => {
+// Website posts a new print job here
+app.post('/add-job', (req, res) => {
   const { sender, message, priority } = req.body;
-  const now = new Date().toLocaleString('en-GB', { hour12: false });
+  if (!message) return res.json({ success: false, error: 'No message' });
 
-  const ESC = 0x1B;
-  const GS  = 0x1D;
-  const commands = [];
+  printQueue.push({ sender, message, priority, time: new Date() });
+  console.log(`📥 Job added to queue. Queue size: ${printQueue.length}`);
+  res.json({ success: true });
+});
 
-  const add  = (...bytes) => bytes.forEach(b => commands.push(b));
-  const text = (str) => { for (const c of str) commands.push(c.charCodeAt(0)); };
-  const newline = (n = 1) => { for (let i = 0; i < n; i++) commands.push(0x0A); };
+// Printer polls this endpoint every 2 seconds (set in Server Direct Print settings)
+// It expects either no content (nothing to print) or Epson XML
+app.get('/print', (req, res) => {
+  if (printQueue.length === 0) {
+    // Nothing to print — send empty 204
+    return res.status(204).send();
+  }
 
-  add(ESC, 0x40);
-  add(ESC, 0x61, 0x01);
-  add(ESC, 0x45, 0x01);
-  add(GS,  0x21, 0x11);
+  const job = printQueue.shift(); // take the first job
+  const now = job.time.toLocaleString('en-GB', { hour12: false });
 
-  if (priority === 'urgent') { text('*** URGENT ***'); newline(); }
+  console.log(`🖨️ Sending job to printer: "${job.message}"`);
 
-  text('MESSAGE FROM STAFF');
-  newline();
-  add(GS, 0x21, 0x00);
-  add(ESC, 0x45, 0x00);
-  text('--------------------------------');
-  newline();
-  add(ESC, 0x61, 0x00);
-  text('Time:   ' + now);
-  newline();
-  if (sender) { text('From:   ' + sender); newline(); }
-  text('--------------------------------');
-  newline();
-  add(ESC, 0x45, 0x01);
-  text(message);
-  add(ESC, 0x45, 0x00);
-  newline(2);
-  add(ESC, 0x61, 0x01);
-  text('[ End of Message ]');
-  newline(4);
-  add(GS, 0x56, 0x41, 0x03);
+  // Build Epson XML response
+  const urgentLine = job.priority === 'urgent'
+    ? `<text width="2" height="2">*** URGENT ***&#10;</text>`
+    : '';
 
-  const buffer = Buffer.from(commands);
-  const client = new net.Socket();
-  let responded = false;
+  const senderLine = job.sender
+    ? `<text>From:  ${job.sender}&#10;</text>`
+    : '';
 
-  client.setTimeout(5000);
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<PrintRequestInfo Version="2.00">
+  <PrintData>
+    <Epos2 xmlns="http://www.epson-pos.com/schemas/2011/03/epos2">
+      <text align="center"/>
+      <text width="2" height="2">MESSAGE&#10;</text>
+      ${urgentLine}
+      <text width="1" height="1"/>
+      <text align="left"/>
+      <text>--------------------------------&#10;</text>
+      <text>Time:  ${now}&#10;</text>
+      ${senderLine}
+      <text>--------------------------------&#10;</text>
+      <text width="1" height="1" b="true">${job.message}&#10;</text>
+      <text b="false"/>
+      <feed line="3"/>
+      <cut type="feed"/>
+    </Epos2>
+  </PrintData>
+</PrintRequestInfo>`;
 
-  client.connect(PRINTER_PORT, PRINTER_IP, () => {
-    client.write(buffer, () => {
-      client.end();
-      if (!responded) { responded = true; res.json({ success: true }); }
-    });
-  });
-
-  client.on('timeout', () => {
-    client.destroy();
-    if (!responded) { responded = true; res.json({ success: false, error: 'Printer timed out' }); }
-  });
-
-  client.on('error', (err) => {
-    if (!responded) { responded = true; res.json({ success: false, error: err.message }); }
-  });
+  res.set('Content-Type', 'text/xml');
+  res.send(xml);
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('  ✅ Kitchen Messenger is running!');
-  console.log('');
-  console.log('  Open this in your browser → http://localhost:3000');
-  console.log('');
-  console.log('  To share with others on the same WiFi, use this');
-  console.log('  computer\'s IP address instead of localhost');
+  console.log(`  Listening on port ${PORT}`);
   console.log('');
 });
