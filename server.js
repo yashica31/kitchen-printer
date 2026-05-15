@@ -2,7 +2,7 @@ const express = require('express');
 const app = express();
 
 app.use(express.json());
-app.use(express.text({ type: '*/*' }));
+app.use(express.urlencoded({ extended: true })); // needed for printer's form data
 
 // In-memory print queue
 let printQueue = [];
@@ -59,10 +59,7 @@ app.get('/', (req, res) => {
       margin-bottom: 16px;
       transition: border-color 0.2s;
     }
-    input[type="text"]:focus {
-      outline: none;
-      border-color: #6c63ff;
-    }
+    input[type="text"]:focus { outline: none; border-color: #6c63ff; }
     textarea {
       width: 100%;
       height: 130px;
@@ -75,10 +72,7 @@ app.get('/', (req, res) => {
       transition: border-color 0.2s;
       margin-bottom: 20px;
     }
-    textarea:focus {
-      outline: none;
-      border-color: #6c63ff;
-    }
+    textarea:focus { outline: none; border-color: #6c63ff; }
     button {
       width: 100%;
       padding: 14px;
@@ -106,14 +100,9 @@ app.get('/', (req, res) => {
     .status.success { background: #e8f5e9; color: #2e7d32; display: block; }
     .status.error   { background: #fdecea; color: #c62828; display: block; }
     .status.sending { background: #e3f2fd; color: #1565c0; display: block; }
-    .priority-row {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 16px;
-    }
+    .priority-row { display: flex; gap: 8px; margin-bottom: 16px; }
     .priority-btn {
-      flex: 1;
-      padding: 8px;
+      flex: 1; padding: 8px;
       border: 1.5px solid #ddd;
       background: white;
       border-radius: 8px;
@@ -136,50 +125,38 @@ app.get('/', (req, res) => {
         <p class="subtitle">Send a message directly to the kitchen printer</p>
       </div>
     </div>
-
     <label>Your name</label>
     <input type="text" id="sender" placeholder="e.g. Front Cashier" />
-
     <label>Priority</label>
     <div class="priority-row">
       <button class="priority-btn active-normal" onclick="setPriority('normal', this)">🟢 Normal</button>
       <button class="priority-btn" onclick="setPriority('urgent', this)">🔴 Urgent</button>
     </div>
-
     <label>Message</label>
     <textarea id="message" placeholder="e.g. Table 4 needs extra napkins..."></textarea>
-
     <button id="sendBtn" onclick="sendMessage()">🖨️ Print to Kitchen</button>
     <div class="status" id="status"></div>
   </div>
-
 <script>
   let priority = 'normal';
-
   function setPriority(p, btn) {
     priority = p;
-    document.querySelectorAll('.priority-btn').forEach(b => {
-      b.className = 'priority-btn';
-    });
+    document.querySelectorAll('.priority-btn').forEach(b => b.className = 'priority-btn');
     btn.className = p === 'urgent' ? 'priority-btn active-urgent' : 'priority-btn active-normal';
   }
-
   async function sendMessage() {
     const sender  = document.getElementById('sender').value.trim();
     const message = document.getElementById('message').value.trim();
     const status  = document.getElementById('status');
     const btn     = document.getElementById('sendBtn');
-
     if (!message) {
       status.className = 'status error';
       status.textContent = '⚠️ Please enter a message first.';
       return;
     }
-
     btn.disabled = true;
     status.className = 'status sending';
     status.textContent = '📡 Sending to printer...';
-
     try {
       const res = await fetch('/add-job', {
         method: 'POST',
@@ -210,61 +187,60 @@ app.get('/', (req, res) => {
 app.post('/add-job', (req, res) => {
   const { sender, message, priority } = req.body;
   if (!message) return res.json({ success: false, error: 'No message' });
-
   printQueue.push({ sender, message, priority, time: new Date() });
-  console.log(`📥 Job added to queue. Queue size: ${printQueue.length}`);
+  console.log(`📥 Job added. Queue size: ${printQueue.length}`);
   res.json({ success: true });
 });
 
-// Printer polls this endpoint via POST (Epson Server Direct Print)
+// Printer polls this endpoint via POST every 2 seconds
+// Printer sends application/x-www-form-urlencoded, expects text/xml back
 app.post('/print', (req, res) => {
+  console.log(`🔔 Printer polled. Queue size: ${printQueue.length}`);
+
   if (printQueue.length === 0) {
-    // Nothing to print — send empty 200
-    return res.status(200).send('');
+    // Nothing to print — send empty response
+    res.set('Content-Type', 'text/xml; charset=utf-8');
+    return res.send(`<?xml version="1.0" encoding="utf-8"?><PrintRequestInfo Version="2.00"></PrintRequestInfo>`);
   }
 
   const job = printQueue.shift();
   const now = job.time.toLocaleString('en-GB', { hour12: false });
-
-  console.log(`🖨️ Sending job to printer: "${job.message}"`);
+  console.log(`🖨️ Sending job: "${job.message}"`);
 
   const urgentLine = job.priority === 'urgent'
-    ? `<text width="2" height="2">*** URGENT ***&#10;</text>`
+    ? `<text width="2" height="2">*** URGENT ***\n</text>`
     : '';
 
   const senderLine = job.sender
-    ? `<text>From:  ${job.sender}&#10;</text>`
+    ? `<text>From:   ${job.sender}\n</text>`
     : '';
 
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <PrintRequestInfo Version="2.00">
   <PrintData>
-    <Epos2 xmlns="http://www.epson-pos.com/schemas/2011/03/epos2">
+    <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
       <text align="center"/>
-      <text width="2" height="2">MESSAGE&#10;</text>
+      <text width="2" height="2" b="true">KITCHEN MSG\n</text>
       ${urgentLine}
-      <text width="1" height="1"/>
+      <text width="1" height="1" b="false"/>
       <text align="left"/>
-      <text>--------------------------------&#10;</text>
-      <text>Time:  ${now}&#10;</text>
+      <text>--------------------------------\n</text>
+      <text>Time:   ${now}\n</text>
       ${senderLine}
-      <text>--------------------------------&#10;</text>
-      <text b="true">${job.message}&#10;</text>
+      <text>--------------------------------\n</text>
+      <text b="true">${job.message}\n</text>
       <text b="false"/>
-      <feed line="3"/>
+      <feed line="4"/>
       <cut type="feed"/>
-    </Epos2>
+    </epos-print>
   </PrintData>
 </PrintRequestInfo>`;
 
-  res.set('Content-Type', 'text/xml');
+  res.set('Content-Type', 'text/xml; charset=utf-8');
   res.send(xml);
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('');
-  console.log('  ✅ Kitchen Messenger is running!');
-  console.log(`  Listening on port ${PORT}`);
-  console.log('');
+  console.log(`\n  ✅ Kitchen Messenger running on port ${PORT}\n`);
 });
