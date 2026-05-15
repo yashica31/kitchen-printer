@@ -2,12 +2,13 @@ const express = require('express');
 const app = express();
 
 app.use(express.json());
+app.use(express.text({ type: '*/*' }));
 
 // In-memory print queue
 let printQueue = [];
 
 // Serve the front-end page
-app.post('/print', (req, res) => {
+app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -215,20 +216,18 @@ app.post('/add-job', (req, res) => {
   res.json({ success: true });
 });
 
-// Printer polls this endpoint every 2 seconds (set in Server Direct Print settings)
-// It expects either no content (nothing to print) or Epson XML
-app.get('/print', (req, res) => {
+// Printer polls this endpoint via POST (Epson Server Direct Print)
+app.post('/print', (req, res) => {
   if (printQueue.length === 0) {
-    // Nothing to print — send empty 204
-    return res.status(204).send();
+    // Nothing to print — send empty 200
+    return res.status(200).send('');
   }
 
-  const job = printQueue.shift(); // take the first job
+  const job = printQueue.shift();
   const now = job.time.toLocaleString('en-GB', { hour12: false });
 
   console.log(`🖨️ Sending job to printer: "${job.message}"`);
 
-  // Build Epson XML response
   const urgentLine = job.priority === 'urgent'
     ? `<text width="2" height="2">*** URGENT ***&#10;</text>`
     : '';
@@ -250,7 +249,7 @@ app.get('/print', (req, res) => {
       <text>Time:  ${now}&#10;</text>
       ${senderLine}
       <text>--------------------------------&#10;</text>
-      <text width="1" height="1" b="true">${job.message}&#10;</text>
+      <text b="true">${job.message}&#10;</text>
       <text b="false"/>
       <feed line="3"/>
       <cut type="feed"/>
