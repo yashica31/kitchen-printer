@@ -7,7 +7,7 @@ app.use(express.json());
 let printQueue = [];
 
 // Serve the front-end page
-app.get('/', (req, res) => {
+app.post('/print', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
